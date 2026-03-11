@@ -7,6 +7,7 @@ import asyncio
 from pathlib import Path
 from typing import Any, Optional
 from io import BytesIO
+from dotenv import load_dotenv
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -23,12 +24,25 @@ class VLMClient:
     def __init__(self, api_key: str, base_url: Optional[str] = None):
         self.api_key = api_key
         self.base_url = base_url or "https://api.openai.com/v1"
+        self._client: Optional[httpx.AsyncClient] = None
 
     def _get_headers(self) -> dict:
         return {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Get or create shared httpx client"""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=120.0)
+        return self._client
+
+    async def close(self):
+        """Close the httpx client"""
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
 
     async def chat(self, model: str, messages: list, **kwargs) -> str:
         """Send chat request"""
@@ -83,19 +97,20 @@ class VLMClient:
             **kwargs
         }
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(url, json=payload, headers=self._get_headers())
-            response.raise_for_status()
-            result = response.json()
+        client = await self._get_client()
+        response = await client.post(url, json=payload, headers=self._get_headers())
+        response.raise_for_status()
+        result = response.json()
 
-            if "choices" in result and len(result["choices"]) > 0:
-                return result["choices"][0]["message"]["content"]
-            return str(result)
+        if "choices" in result and len(result["choices"]) > 0:
+            return result["choices"][0]["message"]["content"]
+        return str(result)
 
 
 # Global client instance
 _vlm_client: Optional[VLMClient] = None
 _default_model: Optional[str] = None
+_max_image_size: int = 3 * 1024 * 1024  # Default 3MB
 
 
 def get_vlm_client() -> VLMClient:
@@ -111,11 +126,18 @@ def get_default_model() -> Optional[str]:
     return _default_model
 
 
-def init_vlm_client(api_key: str, base_url: Optional[str] = None, default_model: Optional[str] = None):
+def get_max_image_size() -> int:
+    """Get max image size in bytes"""
+    return _max_image_size
+
+
+def init_vlm_client(api_key: str, base_url: Optional[str] = None, default_model: Optional[str] = None, max_image_size: Optional[int] = None):
     """Initialize VLM client"""
-    global _vlm_client, _default_model
+    global _vlm_client, _default_model, _max_image_size
     _vlm_client = VLMClient(api_key, base_url)
     _default_model = default_model
+    if max_image_size is not None:
+        _max_image_size = max_image_size
 
 
 # Create MCP Server
@@ -305,45 +327,93 @@ def get_image_b64(image_source: str, max_size: int = 2048, quality: int = 85) ->
         image_source: Image path, URL, or base64 data
         max_size: Maximum dimension (width or height) in pixels. Default 2048.
         quality: JPEG quality (1-100). Default 85.
+
+    Returns:
+        Base64 encoded image data (without data URI prefix)
+
+    Raises:
+        ValueError: If image_source is empty or invalid
     """
+    if not image_source or not image_source.strip():
+        raise ValueError("image_source cannot be empty")
     # Check if it's data URI format
     if image_source.startswith("data:"):
-        return image_source.split(",", 1)[1]
+        b64_data = image_source.split(",", 1)[1]
+        image_bytes = base64.b64decode(b64_data)
+        image = Image.open(BytesIO(image_bytes))
+        return _compress_and_encode(image)
 
     # Check if it's pure base64
     try:
-        base64.b64decode(image_source)
-        return image_source
-    except Exception:
+        image_bytes = base64.b64decode(image_source)
+        image = Image.open(BytesIO(image_bytes))
+        return _compress_and_encode(image)
+    except Exception as e:
+        # Not valid base64, continue to check if it's a URL or file path
         pass
 
     # Check if it's a URL
     if image_source.startswith("http://") or image_source.startswith("https://"):
         response = httpx.get(image_source, timeout=30.0)
         response.raise_for_status()
-        image = Image.open(BytesIO(response.content))
+        image_data = response.content
+        image = Image.open(BytesIO(image_data))
+        return _compress_and_encode(image)
     else:
         # Local file
         image = Image.open(image_source)
+        return _compress_and_encode(image)
 
-    # Convert to RGB mode
+
+def _compress_and_encode(image: Image.Image) -> str:
+    """Compress image until it meets size requirements.
+
+    Args:
+        image: PIL Image object
+
+    Returns:
+        Base64 encoded compressed image
+    """
+    max_size_bytes = get_max_image_size()
+
+    # Convert to RGB mode if needed
     if image.mode not in ("RGB", "L"):
         image = image.convert("RGB")
 
-    # Resize if needed (maintain aspect ratio)
-    width, height = image.size
-    if width > max_size or height > max_size:
-        if width > height:
-            new_width = max_size
-            new_height = int(height * (max_size / width))
-        else:
-            new_height = max_size
-            new_width = int(width * (max_size / height))
-        image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+    # Start with aggressive compression
+    quality = 85
+    max_dimension = 2048
 
-    # Encode to base64 (use JPEG for smaller size)
+    for _ in range(10):  # Max 10 iterations to prevent infinite loop
+        # Resize if needed
+        width, height = image.size
+        if width > max_dimension or height > max_dimension:
+            if width > height:
+                new_width = max_dimension
+                new_height = int(height * (max_dimension / width))
+            else:
+                new_height = max_dimension
+                new_width = int(width * (max_dimension / height))
+            image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+        # Encode and check size
+        buffer = BytesIO()
+        image.save(buffer, format="JPEG", quality=quality, optimize=True)
+        jpeg_bytes = buffer.getvalue()
+        encoded = base64.b64encode(jpeg_bytes).decode("utf-8")
+
+        # Check actual JPEG bytes size (not base64 string length)
+        # Base64 adds ~37% overhead, so we compare raw bytes to max_size_bytes
+        if len(jpeg_bytes) <= max_size_bytes:
+            return encoded
+
+        # Reduce quality and dimension for next iteration
+        quality = max(30, quality - 15)
+        max_dimension = max(512, int(max_dimension * 0.7))
+
+    # Last resort: return what we have even if still too large
     buffer = BytesIO()
-    image.save(buffer, format="JPEG", quality=quality, optimize=True)
+    image.save(buffer, format="JPEG", quality=30, optimize=True)
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
@@ -352,7 +422,10 @@ async def handle_extract_text(image_path: Optional[str] = None, image_data: Opti
     client = get_vlm_client()
 
     # Encode image
-    b64_image = get_image_b64(image_path or image_data or "")
+    image_source = image_path or image_data
+    if not image_source:
+        raise ValueError("Either image_path or image_data must be provided")
+    b64_image = get_image_b64(image_source)
 
     question = "Extract all text content from this image, including Chinese and English. If there is no text in the image, please state so."
 
@@ -634,29 +707,56 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
 
 async def main():
     """Main function"""
+    # Load .env file if exists
+    load_dotenv()
+
     # Initialize client from environment variables
     api_key = os.environ.get("VLM_API_KEY", "")
     base_url = os.environ.get("VLM_BASE_URL")
     default_model = os.environ.get("VLM_MODEL", "")
+    max_image_size_str = os.environ.get("VLM_MAX_IMAGE_SIZE", "")
+
+    # Parse max image size (supports formats like "3MB", "3M", "3145728")
+    max_image_size = None
+    if max_image_size_str:
+        max_image_size_str = max_image_size_str.strip().upper()
+        if max_image_size_str.endswith("MB"):
+            max_image_size = int(float(max_image_size_str[:-2]) * 1024 * 1024)
+        elif max_image_size_str.endswith("M"):
+            max_image_size = int(float(max_image_size_str[:-1]) * 1024 * 1024)
+        elif max_image_size_str.endswith("KB"):
+            max_image_size = int(float(max_image_size_str[:-2]) * 1024)
+        elif max_image_size_str.endswith("K"):
+            max_image_size = int(float(max_image_size_str[:-1]) * 1024)
+        else:
+            try:
+                max_image_size = int(max_image_size_str)
+            except ValueError:
+                pass
 
     if not api_key:
         raise ValueError("VLM_API_KEY environment variable is required")
 
-    init_vlm_client(api_key, base_url, default_model or None)
+    init_vlm_client(api_key, base_url, default_model or None, max_image_size)
 
     # Run server
-    async with stdio_server() as (read_stream, write_stream):
-        await app.run(
-            read_stream,
-            write_stream,
-            InitializationOptions(
-                server_name="vlm-mcp",
-                server_version="0.2.0",
-                capabilities={
-                    "tools": {}
-                }
+    try:
+        async with stdio_server() as (read_stream, write_stream):
+            await app.run(
+                read_stream,
+                write_stream,
+                InitializationOptions(
+                    server_name="vlm-mcp",
+                    server_version="0.2.0",
+                    capabilities={
+                        "tools": {}
+                    }
+                )
             )
-        )
+    finally:
+        # Close httpx client on exit
+        client = get_vlm_client()
+        await client.close()
 
 
 if __name__ == "__main__":

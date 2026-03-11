@@ -1,85 +1,94 @@
 # VLM MCP Server
 
-支持 OpenAI 协议兼容的 VLM 图片理解 MCP Server。
+[中文版本](./README_zh.md)
 
-## 功能
+## Why This Project?
 
-- **extract_text_from_image**: 从图片中提取文字 (OCR)
-- **ui_to_artifact**: 将 UI 截图转换为代码、提示词、设计规格或描述
-- **extract_text_from_screenshot**: 从截图提取文本，支持代码识别
-- **diagnose_error_screenshot**: 分析错误截图，诊断问题原因
-- **understand_technical_diagram**: 分析技术图表（架构图、流程图、UML等）
-- **analyze_data_visualization**: 分析数据可视化图表
-- **ui_diff_check**: UI 对比检测，找出视觉差异
-- **analyze_image**: 通用图片分析
+When using Claude Code with third-party models, they are typically text-only models without image processing capabilities. Adding an MCP server with image processing capability is essential for tasks that require visual understanding.
 
-## 环境变量
+This project enables users to select their own Vision-Language Model (VLM) for image processing.
 
-| 变量名 | 必填 | 说明 |
-|--------|------|------|
-| `VLM_API_KEY` | 是 | API 密钥 |
-| `VLM_BASE_URL` | 否 | 自定义 API 地址（默认: https://api.openai.com/v1） |
-| `VLM_MODEL` | 否 | 使用的模型（默认: gpt-4o） |
+## Features
 
-## 快速开始
+- **extract_text_from_image**: Extract text from images (OCR)
+- **ui_to_artifact**: Convert UI screenshots to code, prompts, design specs, or descriptions
+- **extract_text_from_screenshot**: Extract text from screenshots with code recognition support
+- **diagnose_error_screenshot**: Analyze error screenshots and diagnose issues
+- **understand_technical_diagram**: Analyze technical diagrams (architecture, flowcharts, UML, etc.)
+- **analyze_data_visualization**: Analyze data visualization charts
+- **ui_diff_check**: UI comparison to detect visual differences
+- **analyze_image**: General-purpose image analysis
 
-### 使用 uvx 运行（推荐）
+## Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `VLM_API_KEY` | Yes | API key |
+| `VLM_BASE_URL` | No | Custom API endpoint (default: https://api.openai.com/v1) |
+| `VLM_MODEL` | No | Model to use (default: gpt-4o) |
+| `VLM_MAX_IMAGE_SIZE` | No | Maximum image size (default: 3MB). Images exceeding this size will be automatically compressed before processing. Supported formats: `3MB`, `3M`, `3145728` (bytes), `1024KB`, etc. |
+
+## Quick Start
+
+### Using uvx (Recommended)
 
 ```bash
-# 设置环境变量
-export VLM_API_KEY=your-api-key
-export VLM_MODEL=gpt-4o
+# Copy config template and fill in your API Key
+cp .env.example .env
+# Edit .env file and fill in VLM_API_KEY
 
-# 直接运行
+# Run directly (will automatically load .env file)
 uvx vlm-mcp
 ```
 
-### 使用 pip 安装
+### Using pip
 
 ```bash
-# 安装
+# Install
 pip install vlm-mcp
 
-# 或开发模式安装
+# Or install in development mode
 pip install -e .
 ```
 
-### 配置环境变量
+### Configure Environment Variables
 
 ```bash
 # OpenAI
 export VLM_API_KEY=sk-xxx
 export VLM_MODEL=gpt-4o
 
-# 自定义 API (如 Ollama)
+# Custom API (e.g., Ollama)
 export VLM_API_KEY=your-api-key
 export VLM_BASE_URL=http://localhost:11434/v1
 export VLM_MODEL=qwen2.5-vl
 ```
 
-### 运行服务
+### Run the Server
 
 ```bash
-# 直接运行
+# Run directly
 python -m vlm_mcp
 
-# 或使用安装的命令
+# Or use installed command
 vlm-mcp
 ```
 
-## 支持的模型
+## Supported Models
 
-任何兼容 OpenAI Chat Completions API 的 VLM 模型：
+Any VLM model compatible with OpenAI Chat Completions API:
 
 - gpt-4o
 - gpt-4o-mini
 - gpt-4-turbo
-- qwen2.5-vl 系列
-- 及其他兼容 OpenAI API 的模型
+- qwen2.5-vl series
+- Other OpenAI API compatible models
 
-## Claude Code 配置
+## Claude Code Configuration
 
-在 Claude Code 中配置 MCP 服务器：
+### 1. Configure MCP Server
+
+Add the following to your Claude Code configuration:
 
 ```json
 {
@@ -89,21 +98,37 @@ vlm-mcp
       "args": ["vlm-mcp"],
       "env": {
         "VLM_API_KEY": "your-api-key",
-        "VLM_MODEL": "gpt-4o"
+        "VLM_BASE_URL": "https://api.openai.com/v1",
+        "VLM_MODEL": "gpt-4o",
+        "VLM_MAX_IMAGE_SIZE": "5MB"
       }
     }
   }
 }
 ```
 
-## 使用示例
+### 2. Configure CLAUDE.md
 
-在 Claude Code 中使用：
+To ensure Claude Code uses MCP tools for reading images instead of the built-in Read tool, add the following to your project or global CLAUDE.md:
+
+```markdown
+## MCP Priority
+
+1. Use mcp tools to read images instead of claude code's read tool.
+```
+
+## Usage Examples
+
+In Claude Code:
 
 ```
-请用 extract_text_from_image 工具分析这张图片 /path/to/image.jpg，提取其中的文字。
+Please use extract_text_from_image tool to analyze this image /path/to/image.jpg and extract the text.
 ```
 
 ```
-请用 ui_to_artifact 工具将这个UI截图转换为 React 代码。
+Please use ui_to_artifact tool to convert this UI screenshot to React code.
 ```
+
+---
+
+Inspired by the approach used by Zhipu AI.

@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "vlm-mcp": {
+      "command": "uv",
+      "args": ["run", "--directory", "/home/nuc/vlm-mcp", "vlm-mcp"],
+      "env": {
+        "VLM_API_KEY": "sk-kxyyEmu1NS6RTEBzsh63vYygRZDWrzTGJF0kpYDkY8c5ueFv",
+        "VLM_BASE_URL": "https://api-router.evad.mioffice.cn/v1",
+        "VLM_MODEL": "internal-Qwen2.5-VL-72B-Instruct-AWQ",
+        "VLM_MAX_IMAGE_SIZE": "8MB"
+      }
+    }
+  }
+}
